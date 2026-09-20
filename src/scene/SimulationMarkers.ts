@@ -161,12 +161,16 @@ export class SimulationMarkers {
     this.activeRescues.delete(simId);
   }
 
-  public dispose(): void {
-    for (const [id] of this.activePulses) {
+  public clearAll(): void {
+    for (const id of Array.from(this.activePulses.keys())) {
       this.removePulse(id);
     }
-    for (const [id] of this.activeRescues) {
+    for (const id of Array.from(this.activeRescues.keys())) {
       this.removeRescue(id);
     }
+  }
+
+  public dispose(): void {
+    this.clearAll();
   }
 }

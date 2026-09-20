@@ -196,8 +196,17 @@ export class HazardEffects {
     }
   }
 
-  public dispose(): void {
+  public reset(): void {
+    this.isFloodActive = false;
+    this.floodProgress = 0;
+    this.hazardZones.setRiverFloodProgress(0);
+    this.isFireActive = false;
     this.cleanupFireEmbers();
+    this.isIndustrialActive = false;
     this.cleanupIndustrialCloud();
+  }
+
+  public dispose(): void {
+    this.reset();
   }
 }

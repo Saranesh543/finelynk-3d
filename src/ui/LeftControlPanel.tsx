@@ -26,18 +26,19 @@ export const LeftControlPanel: React.FC<LeftControlPanelProps> = ({
   onResetSimulation,
 }) => {
   return (
-    <aside className="interactive tactical-panel left-panel">
+    <aside className="interactive tactical-panel left-panel" aria-label="Tactical Command Controls">
       {/* SECTION 1: TRIGGER HAZARD */}
       <div className="panel-header">
         <span>Trigger Hazard</span>
       </div>
 
-      <div className="hazard-buttons">
+      <div className="hazard-buttons" role="group" aria-label="Hazard Triggers">
         <button
           type="button"
           className={`tactical-btn tactical-btn-hazard ${activeHazards.flood ? 'hazard-active flood' : ''}`}
           data-hazard="flood"
           aria-label="Trigger Flood at Node Flood-04"
+          aria-pressed={activeHazards.flood}
           disabled={activeHazards.flood}
           onClick={() => onTriggerHazard('flood')}
         >
@@ -51,6 +52,7 @@ export const LeftControlPanel: React.FC<LeftControlPanelProps> = ({
           className={`tactical-btn tactical-btn-hazard ${activeHazards.fire ? 'hazard-active fire' : ''}`}
           data-hazard="fire"
           aria-label="Trigger Forest Fire at Node Forest-07"
+          aria-pressed={activeHazards.fire}
           disabled={activeHazards.fire}
           onClick={() => onTriggerHazard('fire')}
         >
@@ -64,6 +66,7 @@ export const LeftControlPanel: React.FC<LeftControlPanelProps> = ({
           className={`tactical-btn tactical-btn-hazard ${activeHazards.industrial ? 'hazard-active industrial' : ''}`}
           data-hazard="industrial"
           aria-label="Trigger Industrial Leak at Node Indus-02"
+          aria-pressed={activeHazards.industrial}
           disabled={activeHazards.industrial}
           onClick={() => onTriggerHazard('industrial')}
         >
@@ -80,15 +83,19 @@ export const LeftControlPanel: React.FC<LeftControlPanelProps> = ({
         <span>Mesh View</span>
       </div>
 
-      <div className="mesh-toggles">
+      <div className="mesh-toggles" role="group" aria-label="Mesh Visibility Toggles">
         <div
           className="toggle-row"
           onClick={() => onToggleLinks(!showLinks)}
-          role="checkbox"
+          role="switch"
           aria-checked={showLinks}
+          aria-label="Show mesh links"
           tabIndex={0}
           onKeyDown={(e) => {
-            if (e.key === ' ' || e.key === 'Enter') onToggleLinks(!showLinks);
+            if (e.key === ' ' || e.key === 'Enter') {
+              e.preventDefault();
+              onToggleLinks(!showLinks);
+            }
           }}
         >
           <div className="toggle-label-with-icon">
@@ -103,11 +110,15 @@ export const LeftControlPanel: React.FC<LeftControlPanelProps> = ({
         <div
           className="toggle-row"
           onClick={() => onToggleLabels(!showLabels)}
-          role="checkbox"
+          role="switch"
           aria-checked={showLabels}
+          aria-label="Show node labels"
           tabIndex={0}
           onKeyDown={(e) => {
-            if (e.key === ' ' || e.key === 'Enter') onToggleLabels(!showLabels);
+            if (e.key === ' ' || e.key === 'Enter') {
+              e.preventDefault();
+              onToggleLabels(!showLabels);
+            }
           }}
         >
           <div className="toggle-label-with-icon">
@@ -122,12 +133,16 @@ export const LeftControlPanel: React.FC<LeftControlPanelProps> = ({
         <div
           className="toggle-row"
           onClick={() => onToggleSimulateFailure(!simulateFailure)}
-          role="checkbox"
+          role="switch"
           aria-checked={simulateFailure}
+          aria-label="Simulate node failure on Relay-11"
           tabIndex={0}
-          title="Visual preview switch (Phase 3 will trigger actual self-healing)"
+          title="Toggle Relay-11 node failure to observe dynamic mesh self-healing"
           onKeyDown={(e) => {
-            if (e.key === ' ' || e.key === 'Enter') onToggleSimulateFailure(!simulateFailure);
+            if (e.key === ' ' || e.key === 'Enter') {
+              e.preventDefault();
+              onToggleSimulateFailure(!simulateFailure);
+            }
           }}
         >
           <div className="toggle-label-with-icon">

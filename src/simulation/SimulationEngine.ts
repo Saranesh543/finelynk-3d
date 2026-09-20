@@ -104,7 +104,7 @@ export class SimulationEngine {
         hazardType: type,
         hazardNodeId,
         timestamp: this.getTimestamp(),
-        message: `Routing failure: No viable mesh path found for ${spec.name}`,
+        message: `NO_ROUTE_AVAILABLE — No viable mesh path found for ${spec.name}`,
       });
 
       // Gracefully terminate and reset node
@@ -270,11 +270,8 @@ export class SimulationEngine {
    * Resets all simulation instances, stops hazard effects, cleans up markers, and resets nodes.
    */
   public reset(): void {
-    for (const [type, sim] of this.activeSimulations) {
-      this.markers.removePulse(sim.id);
-      this.markers.removeRescue(sim.id);
-      this.hazardEffects.stopHazardEffect(type);
-    }
+    this.markers.clearAll();
+    this.hazardEffects.reset();
     this.activeSimulations.clear();
     this.blockedNodeIds.clear();
     this.networkNodes.resetAllNodes();
@@ -287,9 +284,8 @@ export class SimulationEngine {
   }
 
   public dispose(): void {
-    for (const [type] of this.activeSimulations) {
-      this.hazardEffects.stopHazardEffect(type);
-    }
+    this.markers.clearAll();
+    this.hazardEffects.reset();
     this.activeSimulations.clear();
     this.events.clear();
   }
