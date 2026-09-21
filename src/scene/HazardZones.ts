@@ -1,6 +1,30 @@
 import * as THREE from 'three';
-import { HAZARD_ZONES, getDeterministicFireTrees, getDeterministicIndustrialBuildings } from '../data/hazards';
+import {
+  HAZARD_ZONES,
+  getDeterministicFireTrees,
+  getDeterministicForestBushes,
+  getDeterministicForestRocks,
+  getDeterministicIndustrialBuildings,
+} from '../data/hazards';
+import { HazardType } from '../simulation/types';
 import { Terrain } from './Terrain';
+
+interface ColorTransitionItem {
+  material: THREE.MeshStandardMaterial | THREE.MeshBasicMaterial | THREE.LineBasicMaterial;
+  dormantColor: THREE.Color;
+  activeColor: THREE.Color;
+  dormantOpacity?: number;
+  activeOpacity?: number;
+}
+
+interface TerritoryVisualState {
+  type: HazardType;
+  isActive: boolean;
+  progress: number; // 0 = DORMANT, 1 = ACTIVE
+  transitionItems: ColorTransitionItem[];
+  borderMesh?: THREE.Mesh;
+  discMesh?: THREE.Mesh;
+}
 
 export class HazardZones {
   public group: THREE.Group;
@@ -9,21 +33,46 @@ export class HazardZones {
   private riverMaterial: THREE.MeshBasicMaterial | null = null;
   private riverBaseY: number = 0;
 
+  // Territory Dormant ↔ Active states
+  private territories: Map<HazardType, TerritoryVisualState> = new Map();
+
   constructor() {
     this.group = new THREE.Group();
+
+    this.territories.set('flood', { type: 'flood', isActive: false, progress: 0, transitionItems: [] });
+    this.territories.set('fire', { type: 'fire', isActive: false, progress: 0, transitionItems: [] });
+    this.territories.set('industrial', { type: 'industrial', isActive: false, progress: 0, transitionItems: [] });
 
     this.createFloodZone();
     this.createFireZone();
     this.createIndustrialZone();
+
+    // Initialize all materials to their dormant baseline
+    this.applyTerritoryVisuals('flood', 0);
+    this.applyTerritoryVisuals('fire', 0);
+    this.applyTerritoryVisuals('industrial', 0);
+  }
+
+  // Create a muted desaturated version of any vibrant color for DORMANT state (~35% desaturated)
+  private makeDormantColor(hex: string): THREE.Color {
+    const c = new THREE.Color(hex);
+    const hsl = { h: 0, s: 0, l: 0 };
+    c.getHSL(hsl);
+    // Reduce saturation by ~35% and slightly adjust lightness for a calm strategy map feel
+    hsl.s = Math.max(0.12, hsl.s * 0.62);
+    hsl.l = THREE.MathUtils.clamp(hsl.l * 0.95, 0.25, 0.75);
+    return new THREE.Color().setHSL(hsl.h, hsl.s, hsl.l);
   }
 
   // Create terrain-conforming circular zone disc
   private createZoneDisc(
+    type: HazardType,
     cx: number,
     cz: number,
     radius: number,
     colorHex: string,
-    opacity: number
+    dormantOpacity: number,
+    activeOpacity: number
   ): THREE.Mesh {
     const segments = 48;
     const ringSegments = 12;
@@ -73,54 +122,148 @@ export class HazardZones {
     geom.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
     geom.computeVertexNormals();
 
+    const dormantColor = this.makeDormantColor(colorHex);
+    const activeColor = new THREE.Color(colorHex);
+
     const mat = new THREE.MeshBasicMaterial({
-      color: new THREE.Color(colorHex),
+      color: dormantColor.clone(),
       transparent: true,
-      opacity: opacity,
+      opacity: dormantOpacity,
       side: THREE.DoubleSide,
       depthWrite: false,
     });
 
+    const mesh = new THREE.Mesh(geom, mat);
     this.disposables.push({ geometry: geom, material: mat });
-    return new THREE.Mesh(geom, mat);
+
+    // Register with territory transition system
+    this.territories.get(type)?.transitionItems.push({
+      material: mat,
+      dormantColor,
+      activeColor,
+      dormantOpacity,
+      activeOpacity,
+    });
+
+    return mesh;
   }
 
-  // Create perimeter border ring
-  private createBorderRing(
+  // Create wide, readable terrain-conforming perimeter ribbon ring
+  private createBorderRibbonRing(
+    type: HazardType,
     cx: number,
     cz: number,
     radius: number,
     colorHex: string
-  ): THREE.LineLoop {
-    const points: THREE.Vector3[] = [];
-    const segments = 64;
-    for (let i = 0; i < segments; i++) {
+  ): THREE.Group {
+    const group = new THREE.Group();
+    const segments = 72;
+    const halfWidth = 0.32; // Width of the ribbon band
+
+    const ribbonGeom = new THREE.BufferGeometry();
+    const positions: number[] = [];
+    const indices: number[] = [];
+
+    // Outer & inner vertices following terrain elevation
+    for (let i = 0; i <= segments; i++) {
       const angle = (i / segments) * Math.PI * 2;
-      const px = cx + Math.cos(angle) * radius;
-      const pz = cz + Math.sin(angle) * radius;
-      const py = Terrain.getElevationAt(px, pz) + 0.08;
-      points.push(new THREE.Vector3(px, py, pz));
+      const cosA = Math.cos(angle);
+      const sinA = Math.sin(angle);
+
+      const rInner = radius - halfWidth;
+      const rOuter = radius + halfWidth;
+
+      const pxIn = cx + cosA * rInner;
+      const pzIn = cz + sinA * rInner;
+      const pyIn = Terrain.getElevationAt(pxIn, pzIn) + 0.08;
+
+      const pxOut = cx + cosA * rOuter;
+      const pzOut = cz + sinA * rOuter;
+      const pyOut = Terrain.getElevationAt(pxOut, pzOut) + 0.08;
+
+      positions.push(pxIn, pyIn, pzIn);
+      positions.push(pxOut, pyOut, pzOut);
+
+      if (i < segments) {
+        const v1 = i * 2;
+        const v2 = i * 2 + 1;
+        const v3 = (i + 1) * 2;
+        const v4 = (i + 1) * 2 + 1;
+
+        indices.push(v1, v2, v3);
+        indices.push(v2, v4, v3);
+      }
     }
 
-    const geom = new THREE.BufferGeometry().setFromPoints(points);
-    const mat = new THREE.LineBasicMaterial({
-      color: new THREE.Color(colorHex),
+    ribbonGeom.setIndex(indices);
+    ribbonGeom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    ribbonGeom.computeVertexNormals();
+
+    const dormantColor = this.makeDormantColor(colorHex);
+    const activeColor = new THREE.Color(colorHex);
+
+    const ribbonMat = new THREE.MeshBasicMaterial({
+      color: dormantColor.clone(),
+      transparent: true,
+      opacity: 0.65,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+
+    const ribbonMesh = new THREE.Mesh(ribbonGeom, ribbonMat);
+    group.add(ribbonMesh);
+
+    // Add a crisp outer line loop for maximum perimeter sharpness
+    const linePoints: THREE.Vector3[] = [];
+    for (let i = 0; i < segments; i++) {
+      const angle = (i / segments) * Math.PI * 2;
+      const px = cx + Math.cos(angle) * (radius + halfWidth);
+      const pz = cz + Math.sin(angle) * (radius + halfWidth);
+      const py = Terrain.getElevationAt(px, pz) + 0.09;
+      linePoints.push(new THREE.Vector3(px, py, pz));
+    }
+    const lineGeom = new THREE.BufferGeometry().setFromPoints(linePoints);
+    const lineMat = new THREE.LineBasicMaterial({
+      color: dormantColor.clone(),
       transparent: true,
       opacity: 0.85,
     });
+    const lineLoop = new THREE.LineLoop(lineGeom, lineMat);
+    group.add(lineLoop);
 
-    this.disposables.push({ geometry: geom, material: mat });
-    return new THREE.LineLoop(geom, mat);
+    this.disposables.push(
+      { geometry: ribbonGeom, material: ribbonMat },
+      { geometry: lineGeom, material: lineMat }
+    );
+
+    // Register transition items
+    this.territories.get(type)?.transitionItems.push({
+      material: ribbonMat,
+      dormantColor,
+      activeColor,
+      dormantOpacity: 0.65,
+      activeOpacity: 0.95,
+    });
+    this.territories.get(type)?.transitionItems.push({
+      material: lineMat,
+      dormantColor,
+      activeColor,
+      dormantOpacity: 0.85,
+      activeOpacity: 1.0,
+    });
+
+    return group;
   }
 
-  // 1. Flood Zone
+  // 1. Flood Zone (Vivid turquoise/cyan water + readable boundary ring)
   private createFloodZone(): void {
     const spec = HAZARD_ZONES.flood;
     const [cx, cz] = spec.center;
+    const waterCyanHex = '#2dd4c8';
 
-    // Disc & Ring
-    this.group.add(this.createZoneDisc(cx, cz, spec.radius, spec.color, spec.opacity));
-    this.group.add(this.createBorderRing(cx, cz, spec.radius, spec.color));
+    // Disc & Ribbon Ring
+    this.group.add(this.createZoneDisc('flood', cx, cz, spec.radius, waterCyanHex, 0.12, 0.22));
+    this.group.add(this.createBorderRibbonRing('flood', cx, cz, spec.radius, waterCyanHex));
 
     // River Strip: 9 x 46 units diagonal
     const riverWidth = 9;
@@ -129,7 +272,6 @@ export class HazardZones {
     const riverSegmentsL = 36;
     const riverGeom = new THREE.PlaneGeometry(riverWidth, riverLength, riverSegmentsW, riverSegmentsL);
     riverGeom.rotateX(-Math.PI / 2);
-    // Rotate diagonally ~35 degrees
     const diagonalAngle = 0.65;
     riverGeom.rotateY(diagonalAngle);
 
@@ -146,10 +288,13 @@ export class HazardZones {
     pos.needsUpdate = true;
     riverGeom.computeVertexNormals();
 
+    const dormantWaterColor = this.makeDormantColor(waterCyanHex);
+    const activeWaterColor = new THREE.Color(waterCyanHex);
+
     const riverMat = new THREE.MeshBasicMaterial({
-      color: new THREE.Color(spec.color),
+      color: dormantWaterColor.clone(),
       transparent: true,
-      opacity: 0.28,
+      opacity: 0.55,
       side: THREE.DoubleSide,
       depthWrite: false,
     });
@@ -159,74 +304,318 @@ export class HazardZones {
     this.riverBaseY = this.riverMesh.position.y;
     this.disposables.push({ geometry: riverGeom, material: riverMat });
     this.group.add(this.riverMesh);
+
+    this.territories.get('flood')?.transitionItems.push({
+      material: riverMat,
+      dormantColor: dormantWaterColor,
+      activeColor: activeWaterColor,
+      dormantOpacity: 0.55,
+      activeOpacity: 0.88,
+    });
   }
 
   /**
    * Animate the river strip during flood hazard.
-   * @param progress 0 = normal idle, 1 = maximum flooded height and opacity
+   * Preserves exact functional contract for simulation engine and tests.
    */
   public setRiverFloodProgress(progress: number): void {
     if (!this.riverMesh || !this.riverMaterial) return;
     this.riverMesh.position.y = this.riverBaseY + progress * 0.35;
-    this.riverMaterial.opacity = 0.28 + progress * 0.44;
+    const baseOpacity = this.territories.get('flood')?.isActive ? 0.72 : 0.55;
+    this.riverMaterial.opacity = baseOpacity + progress * 0.26;
   }
 
-  // 2. Forest Fire Zone
+  // 2. Living Forest Territory
   private createFireZone(): void {
     const spec = HAZARD_ZONES.fire;
     const [cx, cz] = spec.center;
+    const fireOrangeHex = spec.color;
 
-    // Disc & Ring
-    this.group.add(this.createZoneDisc(cx, cz, spec.radius, spec.color, spec.opacity));
-    this.group.add(this.createBorderRing(cx, cz, spec.radius, spec.color));
+    // Disc & Readable Ribbon Ring
+    this.group.add(this.createZoneDisc('fire', cx, cz, spec.radius, fireOrangeHex, 0.10, 0.20));
+    this.group.add(this.createBorderRibbonRing('fire', cx, cz, spec.radius, fireOrangeHex));
 
-    // 22 Deterministic Cones / Trees
+    // A. 24 Deterministic Varied Trees (Trunk + Foliage with flatShading: true)
     const trees = getDeterministicFireTrees();
     trees.forEach((tree) => {
-      const coneGeom = new THREE.ConeGeometry(tree.radius, tree.height, 5, 2);
-      const coneMat = new THREE.MeshBasicMaterial({
-        color: new THREE.Color(spec.color),
-        wireframe: true,
-        transparent: true,
-        opacity: 0.55,
+      const treeGroup = new THREE.Group();
+      const groundY = Terrain.getElevationAt(tree.x, tree.z);
+      treeGroup.position.set(tree.x, groundY, tree.z);
+      treeGroup.rotation.y = tree.rotation;
+
+      // Tree Trunk
+      const trunkH = tree.height * 0.38;
+      const trunkR = tree.radius * 0.22;
+      const trunkGeom = new THREE.CylinderGeometry(trunkR * 0.8, trunkR, trunkH, 5);
+      const trunkDormant = this.makeDormantColor(tree.trunkTone);
+      const trunkActive = new THREE.Color(tree.trunkTone);
+
+      const trunkMat = new THREE.MeshStandardMaterial({
+        color: trunkDormant.clone(),
+        flatShading: true,
+        roughness: 0.9,
+      });
+      const trunkMesh = new THREE.Mesh(trunkGeom, trunkMat);
+      trunkMesh.position.y = trunkH / 2;
+      treeGroup.add(trunkMesh);
+
+      // Foliage Canopy: 1 or 2 stacked low-poly cones
+      const foliageDormant = this.makeDormantColor(tree.foliageTone);
+      const foliageActive = new THREE.Color(tree.foliageTone);
+
+      const foliageMat = new THREE.MeshStandardMaterial({
+        color: foliageDormant.clone(),
+        flatShading: true,
+        roughness: 0.75,
       });
 
-      const groundY = Terrain.getElevationAt(tree.x, tree.z);
-      const coneMesh = new THREE.Mesh(coneGeom, coneMat);
-      coneMesh.position.set(tree.x, groundY + tree.height / 2, tree.z);
+      if (tree.layers === 2) {
+        const bottomH = tree.height * 0.45;
+        const topH = tree.height * 0.42;
+        const coneGeom1 = new THREE.ConeGeometry(tree.radius, bottomH, 6);
+        const coneMesh1 = new THREE.Mesh(coneGeom1, foliageMat);
+        coneMesh1.position.y = trunkH + bottomH * 0.4;
+        treeGroup.add(coneMesh1);
 
-      this.disposables.push({ geometry: coneGeom, material: coneMat });
-      this.group.add(coneMesh);
+        const coneGeom2 = new THREE.ConeGeometry(tree.radius * 0.72, topH, 6);
+        const coneMesh2 = new THREE.Mesh(coneGeom2, foliageMat);
+        coneMesh2.position.y = trunkH + bottomH * 0.7 + topH * 0.4;
+        treeGroup.add(coneMesh2);
+
+        this.disposables.push({ geometry: coneGeom1 }, { geometry: coneGeom2 });
+      } else {
+        const canopyH = tree.height * 0.75;
+        const coneGeom = new THREE.ConeGeometry(tree.radius, canopyH, 6);
+        const coneMesh = new THREE.Mesh(coneGeom, foliageMat);
+        coneMesh.position.y = trunkH + canopyH * 0.45;
+        treeGroup.add(coneMesh);
+
+        this.disposables.push({ geometry: coneGeom });
+      }
+
+      this.disposables.push(
+        { geometry: trunkGeom, material: trunkMat },
+        { material: foliageMat }
+      );
+
+      this.territories.get('fire')?.transitionItems.push(
+        { material: trunkMat, dormantColor: trunkDormant, activeColor: trunkActive },
+        { material: foliageMat, dormantColor: foliageDormant, activeColor: foliageActive }
+      );
+
+      this.group.add(treeGroup);
+    });
+
+    // B. 12 Low-Poly Bushes (Flattened icosahedrons with flatShading: true)
+    const bushes = getDeterministicForestBushes();
+    bushes.forEach((bush) => {
+      const groundY = Terrain.getElevationAt(bush.x, bush.z);
+      const bushGeom = new THREE.IcosahedronGeometry(bush.radius, 0);
+      const bushDormant = this.makeDormantColor(bush.foliageTone);
+      const bushActive = new THREE.Color(bush.foliageTone);
+
+      const bushMat = new THREE.MeshStandardMaterial({
+        color: bushDormant.clone(),
+        flatShading: true,
+        roughness: 0.8,
+      });
+      const bushMesh = new THREE.Mesh(bushGeom, bushMat);
+      bushMesh.position.set(bush.x, groundY + bush.radius * bush.scaleY * 0.7, bush.z);
+      bushMesh.scale.set(1.0, bush.scaleY, 1.0);
+      bushMesh.rotation.y = bush.rotation;
+
+      this.disposables.push({ geometry: bushGeom, material: bushMat });
+      this.territories.get('fire')?.transitionItems.push({
+        material: bushMat,
+        dormantColor: bushDormant,
+        activeColor: bushActive,
+      });
+
+      this.group.add(bushMesh);
+    });
+
+    // C. 7 Low-Poly Rocks (Faceted dodecahedrons with flatShading: true)
+    const rocks = getDeterministicForestRocks();
+    rocks.forEach((rock) => {
+      const groundY = Terrain.getElevationAt(rock.x, rock.z);
+      const rockGeom = new THREE.DodecahedronGeometry(rock.radius, 0);
+      const rockDormant = this.makeDormantColor(rock.rockTone);
+      const rockActive = new THREE.Color(rock.rockTone);
+
+      const rockMat = new THREE.MeshStandardMaterial({
+        color: rockDormant.clone(),
+        flatShading: true,
+        roughness: 0.9,
+      });
+      const rockMesh = new THREE.Mesh(rockGeom, rockMat);
+      rockMesh.position.set(rock.x, groundY + rock.radius * rock.scaleY * 0.45, rock.z);
+      rockMesh.scale.set(1.0, rock.scaleY, 1.0);
+      rockMesh.rotation.set(rock.rotationX, rock.rotationY, 0);
+
+      this.disposables.push({ geometry: rockGeom, material: rockMat });
+      this.territories.get('fire')?.transitionItems.push({
+        material: rockMat,
+        dormantColor: rockDormant,
+        activeColor: rockActive,
+      });
+
+      this.group.add(rockMesh);
     });
   }
 
-  // 3. Industrial Zone
+  // 3. Warm Industrial Outpost Territory
   private createIndustrialZone(): void {
     const spec = HAZARD_ZONES.industrial;
     const [cx, cz] = spec.center;
+    const industrialPurpleHex = spec.color;
 
-    // Disc & Ring
-    this.group.add(this.createZoneDisc(cx, cz, spec.radius, spec.color, spec.opacity));
-    this.group.add(this.createBorderRing(cx, cz, spec.radius, spec.color));
+    // Disc & Readable Ribbon Ring
+    this.group.add(this.createZoneDisc('industrial', cx, cz, spec.radius, industrialPurpleHex, 0.10, 0.20));
+    this.group.add(this.createBorderRibbonRing('industrial', cx, cz, spec.radius, industrialPurpleHex));
 
-    // 9 Deterministic Boxes / Buildings
+    // 11 Deterministic Buildings with architectural variety and warm palette
     const buildings = getDeterministicIndustrialBuildings();
     buildings.forEach((b) => {
-      const boxGeom = new THREE.BoxGeometry(b.width, b.height, b.depth);
-      const boxMat = new THREE.MeshBasicMaterial({
-        color: new THREE.Color(spec.color),
-        wireframe: true,
-        transparent: true,
-        opacity: 0.55,
+      const buildingGroup = new THREE.Group();
+      const groundY = Terrain.getElevationAt(b.x, b.z);
+      buildingGroup.position.set(b.x, groundY, b.z);
+      buildingGroup.rotation.y = b.rotation;
+
+      const wallDormant = this.makeDormantColor(b.wallTone);
+      const wallActive = new THREE.Color(b.wallTone);
+      const roofDormant = this.makeDormantColor(b.roofTone);
+      const roofActive = new THREE.Color(b.roofTone);
+
+      const wallMat = new THREE.MeshStandardMaterial({
+        color: wallDormant.clone(),
+        flatShading: true,
+        roughness: 0.85,
+      });
+      const roofMat = new THREE.MeshStandardMaterial({
+        color: roofDormant.clone(),
+        flatShading: true,
+        roughness: 0.75,
       });
 
-      const groundY = Terrain.getElevationAt(b.x, b.z);
-      const boxMesh = new THREE.Mesh(boxGeom, boxMat);
-      boxMesh.position.set(b.x, groundY + b.height / 2, b.z);
+      if (b.type === 'silo') {
+        // Cylindrical storage silo with conical cap
+        const siloR = b.width * 0.45;
+        const siloH = b.height * 0.8;
+        const capH = b.height * 0.25;
 
-      this.disposables.push({ geometry: boxGeom, material: boxMat });
-      this.group.add(boxMesh);
+        const siloGeom = new THREE.CylinderGeometry(siloR, siloR, siloH, 8);
+        const siloMesh = new THREE.Mesh(siloGeom, wallMat);
+        siloMesh.position.y = siloH / 2;
+        buildingGroup.add(siloMesh);
+
+        const capGeom = new THREE.ConeGeometry(siloR * 1.08, capH, 8);
+        const capMesh = new THREE.Mesh(capGeom, roofMat);
+        capMesh.position.y = siloH + capH / 2;
+        buildingGroup.add(capMesh);
+
+        this.disposables.push({ geometry: siloGeom }, { geometry: capGeom });
+      } else if (b.type === 'pitched') {
+        // Main block + pitched / pyramidal roof
+        const bodyH = b.height * 0.72;
+        const roofH = b.height * 0.35;
+
+        const bodyGeom = new THREE.BoxGeometry(b.width, bodyH, b.depth);
+        const bodyMesh = new THREE.Mesh(bodyGeom, wallMat);
+        bodyMesh.position.y = bodyH / 2;
+        buildingGroup.add(bodyMesh);
+
+        // 4-sided pyramid pitched roof
+        const roofGeom = new THREE.ConeGeometry(Math.hypot(b.width, b.depth) * 0.52, roofH, 4);
+        roofGeom.rotateY(Math.PI / 4);
+        const roofMesh = new THREE.Mesh(roofGeom, roofMat);
+        roofMesh.position.y = bodyH + roofH / 2;
+        buildingGroup.add(roofMesh);
+
+        this.disposables.push({ geometry: bodyGeom }, { geometry: roofGeom });
+      } else {
+        // Flat roof outpost block with rooftop HVAC/utility unit
+        const bodyGeom = new THREE.BoxGeometry(b.width, b.height, b.depth);
+        const bodyMesh = new THREE.Mesh(bodyGeom, wallMat);
+        bodyMesh.position.y = b.height / 2;
+        buildingGroup.add(bodyMesh);
+
+        const utilGeom = new THREE.BoxGeometry(b.width * 0.45, b.height * 0.18, b.depth * 0.45);
+        const utilMesh = new THREE.Mesh(utilGeom, roofMat);
+        utilMesh.position.y = b.height + (b.height * 0.18) / 2;
+        buildingGroup.add(utilMesh);
+
+        this.disposables.push({ geometry: bodyGeom }, { geometry: utilGeom });
+      }
+
+      this.disposables.push({ material: wallMat }, { material: roofMat });
+      this.territories.get('industrial')?.transitionItems.push(
+        { material: wallMat, dormantColor: wallDormant, activeColor: wallActive },
+        { material: roofMat, dormantColor: roofDormant, activeColor: roofActive }
+      );
+
+      this.group.add(buildingGroup);
     });
+  }
+
+  /**
+   * Set active state for an individual territory (triggered by simulation events).
+   */
+  public setTerritoryActive(type: HazardType, active: boolean): void {
+    const territory = this.territories.get(type);
+    if (territory) {
+      territory.isActive = active;
+    }
+  }
+
+  /**
+   * Immediately snap all territories to clean dormant rest state.
+   */
+  public resetAllTerritories(): void {
+    for (const [type, state] of this.territories.entries()) {
+      state.isActive = false;
+      state.progress = 0;
+      this.applyTerritoryVisuals(type, 0);
+    }
+  }
+
+  /**
+   * Per-frame animation loop interpolating Dormant ↔ Active transitions.
+   * Duration: ~0.8s smooth lerp.
+   */
+  public update(deltaTime: number): void {
+    const transitionSpeed = 1.25; // 1 / 0.8s
+    for (const [type, state] of this.territories.entries()) {
+      const target = state.isActive ? 1.0 : 0.0;
+      if (Math.abs(state.progress - target) > 0.001) {
+        const step = transitionSpeed * deltaTime;
+        if (state.progress < target) {
+          state.progress = Math.min(target, state.progress + step);
+        } else {
+          state.progress = Math.max(target, state.progress - step);
+        }
+        this.applyTerritoryVisuals(type, state.progress);
+      }
+    }
+  }
+
+  /**
+   * Interpolate all materials within a territory between dormant and active values.
+   */
+  private applyTerritoryVisuals(type: HazardType, progress: number): void {
+    const state = this.territories.get(type);
+    if (!state) return;
+
+    for (const item of state.transitionItems) {
+      // Lerp color
+      if ('color' in item.material) {
+        item.material.color.copy(item.dormantColor).lerp(item.activeColor, progress);
+      }
+
+      // Lerp opacity if defined
+      if (item.dormantOpacity !== undefined && item.activeOpacity !== undefined) {
+        item.material.opacity = THREE.MathUtils.lerp(item.dormantOpacity, item.activeOpacity, progress);
+      }
+    }
   }
 
   public dispose(): void {

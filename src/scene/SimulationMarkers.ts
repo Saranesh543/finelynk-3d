@@ -7,6 +7,9 @@ interface PathMarkerInstance {
   mesh: THREE.Mesh;
   geometry: THREE.BufferGeometry;
   material: THREE.MeshBasicMaterial;
+  ringMesh?: THREE.Mesh;
+  ringGeometry?: THREE.BufferGeometry;
+  ringMaterial?: THREE.MeshBasicMaterial;
   waypoints: THREE.Vector3[];
   nodeIds: number[];
 }
@@ -108,7 +111,7 @@ export class SimulationMarkers {
 
     if (waypoints.length < 2) return;
 
-    // Gold rescue marker (#fbbf24)
+    // Gold rescue marker sphere (#fbbf24)
     const geom = new THREE.SphereGeometry(0.32, 14, 14);
     const mat = new THREE.MeshBasicMaterial({
       color: new THREE.Color('#fbbf24'),
@@ -116,6 +119,19 @@ export class SimulationMarkers {
 
     const mesh = new THREE.Mesh(geom, mat);
     mesh.position.copy(waypoints[0]);
+
+    // High-visibility orbiting beacon ring for immediate tracking
+    const ringGeom = new THREE.RingGeometry(0.46, 0.60, 16);
+    ringGeom.rotateX(Math.PI / 2);
+    const ringMat = new THREE.MeshBasicMaterial({
+      color: new THREE.Color('#f59e0b'),
+      side: THREE.DoubleSide,
+      transparent: true,
+      opacity: 0.85,
+    });
+    const ringMesh = new THREE.Mesh(ringGeom, ringMat);
+    mesh.add(ringMesh);
+
     this.group.add(mesh);
 
     this.activeRescues.set(simId, {
@@ -123,6 +139,9 @@ export class SimulationMarkers {
       mesh,
       geometry: geom,
       material: mat,
+      ringMesh,
+      ringGeometry: ringGeom,
+      ringMaterial: ringMat,
       waypoints,
       nodeIds: reversedNodeIds,
     });
@@ -145,10 +164,15 @@ export class SimulationMarkers {
 
     rescue.mesh.position.lerpVectors(pA, pB, t);
 
+    // Rotate beacon ring for dynamic motion cue
+    if (rescue.ringMesh) {
+      rescue.ringMesh.rotation.z += 0.08;
+    }
+
     // Subtle edge illumination along rescue route as well
     const u = rescue.nodeIds[segIndex];
     const v = rescue.nodeIds[segIndex + 1];
-    this.meshLinks.highlightEdge(u, v, 0.65);
+    this.meshLinks.highlightEdge(u, v, 0.75);
   }
 
   public removeRescue(simId: string): void {
@@ -158,6 +182,8 @@ export class SimulationMarkers {
     this.group.remove(rescue.mesh);
     rescue.geometry.dispose();
     rescue.material.dispose();
+    rescue.ringGeometry?.dispose();
+    rescue.ringMaterial?.dispose();
     this.activeRescues.delete(simId);
   }
 

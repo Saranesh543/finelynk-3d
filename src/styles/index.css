@@ -1,18 +1,18 @@
 :root {
   --void: #060a14;
-  --panel: #0c1526;
-  --panel-2: #0f1c33;
-  --border: #1c2c47;
-  --text: #dbe4f3;
-  --text-dim: #6b7c99;
-  --cyan: #2dd4ee;
-  --flood: #3b82f6;
+  --panel: #0a1424;
+  --panel-2: #0e1b30;
+  --border: #1e3352;
+  --text: #f1f5f9;
+  --text-dim: #8295b0;
+  --cyan: #22d3ee;
+  --flood: #0284c7;
   --fire: #f97316;
   --industrial: #c084fc;
   --critical: #ef4444;
-  --resolved: #34d399;
-  --command: #fbbf24;
-  --offline: #334155;
+  --resolved: #10b981;
+  --command: #f59e0b;
+  --offline: #475569;
 
   --font-heading: 'Space Grotesk', -apple-system, BlinkMacSystemFont, sans-serif;
   --font-mono: 'JetBrains Mono', monospace;
@@ -33,7 +33,7 @@ html, body, #root {
   width: 100%;
   height: 100%;
   overflow: hidden;
-  background-color: var(--void);
+  background: linear-gradient(180deg, #2f7fd6 0%, #6fb3e8 50%, #cfe8f5 100%);
   color: var(--text);
   font-family: var(--font-mono);
   user-select: none;
@@ -77,12 +77,12 @@ html, body, #root {
 
 /* Tactical Panel Styling */
 .tactical-panel {
-  background-color: rgba(12, 21, 38, 0.88);
-  border: 1px solid var(--border);
+  background-color: rgba(10, 18, 34, 0.92);
+  border: 1px solid rgba(34, 211, 238, 0.22);
   border-radius: var(--panel-radius);
   padding: var(--panel-padding);
-  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.4);
-  backdrop-filter: blur(8px);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  backdrop-filter: blur(12px);
 }
 
 .panel-header {
@@ -225,17 +225,18 @@ html, body, #root {
 .node-label-item {
   position: absolute;
   transform: translate(-50%, -100%);
-  padding: 2px 7px;
-  background-color: rgba(6, 10, 20, 0.88);
+  padding: 3px 8px;
+  background-color: rgba(6, 10, 20, 0.92);
   border: 1px solid var(--border);
   border-radius: 4px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.08);
   font-family: var(--font-mono);
   font-size: 0.65rem;
   font-weight: 600;
   letter-spacing: 0.05em;
   white-space: nowrap;
   pointer-events: none;
-  transition: opacity 0.15s ease;
+  transition: opacity 0.15s ease, border-color 0.2s ease, color 0.2s ease;
 }
 
 .node-label-item.command {
@@ -251,6 +252,12 @@ html, body, #root {
 .node-label-item.critical {
   border-color: var(--critical);
   color: var(--critical);
+}
+
+.node-label-item.offline {
+  border-color: var(--offline);
+  color: var(--offline);
+  background-color: rgba(15, 23, 42, 0.92);
 }
 
 /* Scrollbars */
