@@ -32,6 +32,7 @@ export type SimulationEventType =
   | 'NO_ROUTE_AVAILABLE'
   | 'NODE_FAILED'
   | 'NODE_RESTORED'
+  | 'ROUTE_RECONFIGURED'
   | 'SIMULATION_RESET';
 
 export interface SimulationEvent {
@@ -42,4 +43,10 @@ export interface SimulationEvent {
   path?: number[];
   timestamp: string; // HH:MM:SS
   message: string;
+  riskScore?: number;
+  riskLevel?: 'LOW' | 'MODERATE' | 'HIGH' | 'CRITICAL';
+  priority?: 'MONITORING' | 'ELEVATED' | 'URGENT' | 'EMERGENCY';
+  classification?: string;
+  recommendedAction?: string;
+  isRerouted?: boolean;
 }

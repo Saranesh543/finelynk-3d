@@ -1,8 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { ThreeScene } from './scene/ThreeScene';
 import { HUD } from './ui/HUD';
-
 import { HazardType } from './simulation/types';
+import { InteractiveTarget } from './interaction/types';
 
 export const App: React.FC = () => {
   const canvasContainerRef = useRef<HTMLDivElement>(null);
@@ -12,7 +12,13 @@ export const App: React.FC = () => {
   // HUD Interactive States
   const [showLinks, setShowLinks] = useState<boolean>(true);
   const [showLabels, setShowLabels] = useState<boolean>(true);
-  const [simulateFailure, setSimulateFailure] = useState<boolean>(false);
+
+  // Universal Node Failure tracking
+  const [failedNodes, setFailedNodes] = useState<Set<number>>(new Set());
+
+  // Interactive Selection and Hover states
+  const [selectedTarget, setSelectedTarget] = useState<InteractiveTarget | null>(null);
+  const [hoveredTarget, setHoveredTarget] = useState<InteractiveTarget | null>(null);
 
   // Active Hazard State tracking
   const [activeHazards, setActiveHazards] = useState<Record<HazardType, boolean>>({
@@ -33,6 +39,15 @@ export const App: React.FC = () => {
     sceneRef.current = scene;
     setSceneInstance(scene);
 
+    // Listen to 3D raycast selection & hover from InteractionManager
+    const unselect = scene.interactionManager.onSelect((target) => {
+      setSelectedTarget(target);
+    });
+
+    const unhover = scene.interactionManager.onHover((target) => {
+      setHoveredTarget(target);
+    });
+
     // Subscribe to simulation lifecycle events to reflect active hazard states & telemetry
     const unsubscribe = scene.simulationEngine.events.on('*', (event) => {
       if (event.type === 'HAZARD_DETECTED') {
@@ -46,15 +61,27 @@ export const App: React.FC = () => {
         setTeamsDeployed((prev) => Math.max(0, prev - 1));
       } else if (event.type === 'NO_ROUTE_AVAILABLE') {
         setActiveHazards((prev) => ({ ...prev, [event.hazardType as string]: false }));
+      } else if (event.type === 'NODE_FAILED' && event.nodeId !== undefined) {
+        setFailedNodes((prev) => new Set(prev).add(event.nodeId!));
+      } else if (event.type === 'NODE_RESTORED' && event.nodeId !== undefined) {
+        setFailedNodes((prev) => {
+          const next = new Set(prev);
+          next.delete(event.nodeId!);
+          return next;
+        });
       } else if (event.type === 'SIMULATION_RESET') {
         setActiveHazards({ flood: false, fire: false, industrial: false });
         setActiveAlerts(0);
         setTeamsDeployed(0);
-        setSimulateFailure(false);
+        setFailedNodes(new Set());
+        setSelectedTarget(null);
+        setHoveredTarget(null);
       }
     });
 
     return () => {
+      unselect();
+      unhover();
       unsubscribe();
       scene.dispose();
       sceneRef.current = null;
@@ -77,11 +104,23 @@ export const App: React.FC = () => {
     }
   };
 
-  // Simulate node failure (Node 4: Relay-11)
-  const handleToggleSimulateFailure = (simulate: boolean) => {
-    setSimulateFailure(simulate);
+  // Universal Node Failure & Restoration (Nodes 0 through 6)
+  const handleToggleNodeFailure = (nodeId: number, failed: boolean) => {
     if (sceneRef.current) {
-      sceneRef.current.setNodeFailure(4, simulate);
+      sceneRef.current.setNodeFailure(nodeId, failed);
+    }
+    setFailedNodes((prev) => {
+      const next = new Set(prev);
+      if (failed) next.add(nodeId);
+      else next.delete(nodeId);
+      return next;
+    });
+  };
+
+  const handleSelectTarget = (target: InteractiveTarget | null) => {
+    setSelectedTarget(target);
+    if (sceneRef.current) {
+      sceneRef.current.interactionManager.selectTarget(target);
     }
   };
 
@@ -90,7 +129,9 @@ export const App: React.FC = () => {
     if (sceneRef.current) {
       sceneRef.current.resetSimulation();
     }
-    setSimulateFailure(false);
+    setFailedNodes(new Set());
+    setSelectedTarget(null);
+    setHoveredTarget(null);
     setActiveHazards({ flood: false, fire: false, industrial: false });
     setActiveAlerts(0);
     setTeamsDeployed(0);
@@ -112,13 +153,16 @@ export const App: React.FC = () => {
         onToggleLinks={handleToggleLinks}
         showLabels={showLabels}
         onToggleLabels={setShowLabels}
-        simulateFailure={simulateFailure}
-        onToggleSimulateFailure={handleToggleSimulateFailure}
         activeHazards={activeHazards}
         onTriggerHazard={handleTriggerHazard}
         onResetSimulation={handleResetSimulation}
         activeAlerts={activeAlerts}
         teamsDeployed={teamsDeployed}
+        selectedTarget={selectedTarget}
+        onSelectTarget={handleSelectTarget}
+        hoveredTarget={hoveredTarget}
+        failedNodeIds={failedNodes}
+        onToggleNodeFailure={handleToggleNodeFailure}
       />
     </main>
   );

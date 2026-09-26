@@ -1,35 +1,54 @@
 import React from 'react';
-import { Activity, ShieldAlert, Users } from 'lucide-react';
+import { Activity, ShieldAlert, Users, Radio } from 'lucide-react';
 
 interface TopBarProps {
   totalNodes?: number;
+  failedNodeCount?: number;
   activeAlerts?: number;
   teamsDeployed?: number;
+  networkHealthPct?: number;
 }
 
 export const TopBar: React.FC<TopBarProps> = ({
   totalNodes = 7,
+  failedNodeCount = 0,
   activeAlerts = 0,
   teamsDeployed = 0,
+  networkHealthPct = 100,
 }) => {
+  const isDegraded = failedNodeCount > 0 || networkHealthPct < 100;
+
   return (
     <header className="interactive top-bar">
       <div className="top-bar-left">
-        <div className="status-beacon">
+        <div className={`status-beacon ${isDegraded ? 'degraded' : ''}`}>
           <span className="status-dot"></span>
           <span className="status-pulse"></span>
         </div>
         <div>
           <div className="brand-title">FineLynk // Live Network</div>
-          <div className="brand-subtitle">Offline mesh simulation — command view</div>
+          <div className={`brand-subtitle ${isDegraded ? 'degraded-text' : ''}`}>
+            {isDegraded
+              ? `OFFLINE MESH DEGRADED — ${failedNodeCount} NODE${failedNodeCount > 1 ? 'S' : ''} OFFLINE (SIMULATED TELEMETRY)`
+              : `OFFLINE MESH ONLINE — ALL ${totalNodes} NODES OPERATIONAL (SIMULATED TELEMETRY)`}
+          </div>
         </div>
       </div>
 
       <div className="top-bar-right">
-        <div className="stat-chip" title="Total active mesh nodes">
-          <Activity size={13} className="stat-icon cyan" />
-          <span className="stat-label">Total Nodes</span>
-          <span className="stat-value">{totalNodes}</span>
+        <div
+          className={`stat-chip ${networkHealthPct < 100 ? 'degraded-chip' : ''}`}
+          title="Network Health: available active links / total network links"
+        >
+          <Radio size={13} className={`stat-icon ${networkHealthPct < 100 ? 'critical' : 'cyan'}`} />
+          <span className="stat-label">Mesh Health</span>
+          <span className="stat-value">{networkHealthPct}%</span>
+        </div>
+
+        <div className={`stat-chip ${failedNodeCount > 0 ? 'degraded-chip' : ''}`} title="Active online mesh nodes">
+          <Activity size={13} className={`stat-icon ${failedNodeCount > 0 ? 'critical' : 'cyan'}`} />
+          <span className="stat-label">Nodes Online</span>
+          <span className="stat-value">{totalNodes - failedNodeCount}/{totalNodes}</span>
         </div>
 
         <div className={`stat-chip ${activeAlerts > 0 ? 'active-alert-chip' : ''}`} title="Active unhandled hazards">
@@ -87,15 +106,22 @@ export const TopBar: React.FC<TopBarProps> = ({
           animation: beaconPulse 2.4s cubic-bezier(0.25, 1, 0.5, 1) infinite;
         }
 
-        @keyframes beaconPulse {
-          0% {
-            transform: scale(1);
-            opacity: 0.8;
-          }
-          100% {
-            transform: scale(2.8);
-            opacity: 0;
-          }
+        .status-beacon.degraded .status-dot {
+          background-color: var(--fire);
+        }
+
+        .status-beacon.degraded .status-pulse {
+          background-color: var(--fire);
+        }
+
+        .degraded-text {
+          color: var(--fire) !important;
+          font-weight: 600;
+        }
+
+        .stat-chip.degraded-chip {
+          border-color: rgba(249, 115, 22, 0.5);
+          background-color: rgba(249, 115, 22, 0.1);
         }
 
         .brand-title {

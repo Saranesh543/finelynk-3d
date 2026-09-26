@@ -5,15 +5,19 @@ import { SimulationEventEmitter } from './events';
 import { NetworkNodes } from '../scene/NetworkNodes';
 import { HazardEffects } from '../scene/HazardEffects';
 import { SimulationMarkers } from '../scene/SimulationMarkers';
+import { NETWORK_NODES } from '../data/nodes';
+import { TelemetryService } from './telemetry';
 
 export class SimulationEngine {
   public activeSimulations: Map<HazardType, HazardSimulation> = new Map();
   public events: SimulationEventEmitter = new SimulationEventEmitter();
   public blockedNodeIds: Set<number> = new Set();
+  public telemetry: TelemetryService = new TelemetryService();
 
   private networkNodes: NetworkNodes;
   private hazardEffects: HazardEffects;
   private markers: SimulationMarkers;
+  private totalElapsedTime: number = 0;
 
   // Timing specifications
   private readonly BROADCAST_DURATION = 1.1; // ~1.1s alert pulse travel
@@ -39,9 +43,13 @@ export class SimulationEngine {
   }
 
   /**
-   * Toggles node operational failure status (e.g. Relay-11 offline).
+   * Toggles node operational failure status for any of the 7 network nodes.
+   * Dynamically triggers self-healing BFS path re-evaluation and emits ROUTE_RECONFIGURED events.
    */
   public setNodeBlocked(nodeId: number, blocked: boolean): void {
+    const node = NETWORK_NODES.find((n) => n.id === nodeId);
+    const nodeName = node ? node.name : `Node-${nodeId}`;
+
     if (blocked) {
       this.blockedNodeIds.add(nodeId);
       this.networkNodes.setNodeStatus(nodeId, 'offline');
@@ -49,17 +57,53 @@ export class SimulationEngine {
         type: 'NODE_FAILED',
         nodeId,
         timestamp: this.getTimestamp(),
-        message: 'Relay-11 marked OFFLINE — mesh rerouting around failed node',
+        message: `NODE OFFLINE — ${nodeName} failed. Mesh auto-rerouting active paths.`,
       });
     } else {
       this.blockedNodeIds.delete(nodeId);
-      this.networkNodes.setNodeStatus(nodeId, 'safe', true);
+      const restoredStatus = node?.isCommandCenter ? 'command' : 'safe';
+      this.networkNodes.setNodeStatus(nodeId, restoredStatus, true);
       this.events.emit({
         type: 'NODE_RESTORED',
         nodeId,
         timestamp: this.getTimestamp(),
-        message: 'Relay-11 back ONLINE — mesh restored',
+        message: `NODE ONLINE — ${nodeName} restored. Mesh topology recovered.`,
       });
+    }
+
+    // Dynamic Self-Healing BFS evaluation across all active simulations
+    for (const [hazardType, sim] of this.activeSimulations.entries()) {
+      const newPath = findShortestPath(sim.hazardNodeId, 0, this.blockedNodeIds);
+
+      if (newPath && newPath.length >= 2) {
+        const isPathChanged =
+          newPath.length !== sim.path.length ||
+          newPath.some((id, idx) => id !== sim.path[idx]);
+
+        if (isPathChanged) {
+          sim.path = newPath;
+          this.events.emit({
+            type: 'ROUTE_RECONFIGURED',
+            hazardType,
+            hazardNodeId: sim.hazardNodeId,
+            path: newPath,
+            isRerouted: true,
+            timestamp: this.getTimestamp(),
+            message: `[SELF-HEALING] ROUTE RECONFIGURED — Cause: ${nodeName} ${blocked ? 'OFFLINE' : 'RESTORED'}. New Route: [${newPath.join(' → ')}]`,
+          });
+        }
+      } else {
+        // No route available — sever active pulse/rescue and notify command center
+        this.markers.removePulse(sim.id);
+        this.markers.removeRescue(sim.id);
+        this.events.emit({
+          type: 'NO_ROUTE_AVAILABLE',
+          hazardType,
+          hazardNodeId: sim.hazardNodeId,
+          timestamp: this.getTimestamp(),
+          message: `NO ROUTE AVAILABLE — Communication path unavailable for Node ${sim.hazardNodeId}. ACTION REQUIRED: Restore network connectivity.`,
+        });
+      }
     }
   }
 
@@ -76,6 +120,19 @@ export class SimulationEngine {
   }
 
   /**
+   * Returns all active route paths across running simulations.
+   */
+  public getActiveRoutes(): number[][] {
+    const routes: number[][] = [];
+    for (const sim of this.activeSimulations.values()) {
+      if (sim.path && sim.path.length > 0) {
+        routes.push(sim.path);
+      }
+    }
+    return routes;
+  }
+
+  /**
    * Triggers a hazard simulation if not already active.
    * @returns true if started, false if already active/ignored
    */
@@ -88,28 +145,50 @@ export class SimulationEngine {
     const spec = HAZARD_ZONES[type];
     const hazardNodeId = spec.targetNodeId;
 
+    // Check if origin hazard node is offline
+    if (this.blockedNodeIds.has(hazardNodeId)) {
+      console.warn(`Hazard node ${spec.name} is OFFLINE`);
+      this.events.emit({
+        type: 'NO_ROUTE_AVAILABLE',
+        hazardType: type,
+        hazardNodeId,
+        timestamp: this.getTimestamp(),
+        message: `NO_ROUTE_AVAILABLE — ${spec.name} is OFFLINE. Telemetry transmission failed.`,
+      });
+      return false;
+    }
+
     // Immediately mark node critical (urgency cue)
     this.networkNodes.setNodeStatus(hazardNodeId, 'critical');
 
     // Immediately start visual hazard effect
     this.hazardEffects.startHazardEffect(type);
 
-    // Calculate BFS route to Command Center (Node 0) respecting blocked nodes
+    // Calculate BFS route to Command Center (Node 0) respecting all blocked nodes
     const path = findShortestPath(hazardNodeId, 0, this.blockedNodeIds);
 
     if (!path || path.length < 2) {
       console.warn(`No route available from Node ${hazardNodeId} to Command Center`);
+      let failureReason = `No viable mesh path found for ${spec.name}. All redundant routes blocked.`;
+      if (this.blockedNodeIds.has(0)) {
+        failureReason = 'COMMAND NODE OFFLINE. Rescue dispatch unavailable.';
+      }
+
       this.events.emit({
         type: 'NO_ROUTE_AVAILABLE',
         hazardType: type,
         hazardNodeId,
         timestamp: this.getTimestamp(),
-        message: `NO_ROUTE_AVAILABLE — No viable mesh path found for ${spec.name}`,
+        message: `NO_ROUTE_AVAILABLE — ${failureReason}`,
       });
 
-      // Gracefully terminate and reset node
+      // Stop hazard visual effect and recover node state after brief warning cue
       this.hazardEffects.stopHazardEffect(type);
-      this.networkNodes.setNodeStatus(hazardNodeId, 'safe');
+      setTimeout(() => {
+        if (!this.blockedNodeIds.has(hazardNodeId) && !this.isHazardActive(type)) {
+          this.networkNodes.setNodeStatus(hazardNodeId, 'safe');
+        }
+      }, 1200);
       return false;
     }
 
@@ -128,14 +207,25 @@ export class SimulationEngine {
 
     this.activeSimulations.set(type, simulation);
 
-    // Emit initial detection event
+    // Update telemetry state immediately for this active hazard and evaluate edge risk
+    this.telemetry.update(this.totalElapsedTime + 0.1, this.activeSimulations, this.blockedNodeIds);
+    const assessment = this.telemetry.getEdgeRiskAssessment(hazardNodeId);
+    const routeIntel = this.telemetry.getRouteIntelligence(type, this.blockedNodeIds);
+
+    // Emit initial detection event with complete Edge Intelligence
     this.events.emit({
       type: 'HAZARD_DETECTED',
       hazardType: type,
       hazardNodeId,
       path,
+      riskScore: assessment.riskScore,
+      riskLevel: assessment.riskLevel,
+      priority: assessment.priority,
+      classification: assessment.classification,
+      recommendedAction: assessment.recommendedAction,
+      isRerouted: routeIntel.isRerouted,
       timestamp: this.getTimestamp(),
-      message: `Hazard detected at Node ${spec.name}. Calculating tactical mesh route: ${path.join(' → ')}`,
+      message: `[AI EDGE] ${assessment.riskLevel} RISK — ${spec.name} (${assessment.classification}). Score: ${assessment.riskScore}/100. Route: [${path.join(' → ')}]${routeIntel.isRerouted ? ' (REROUTED)' : ''}`,
     });
 
     // Start Alert Pulse marker along path
@@ -145,8 +235,13 @@ export class SimulationEngine {
       hazardType: type,
       hazardNodeId,
       path,
+      riskScore: assessment.riskScore,
+      riskLevel: assessment.riskLevel,
+      priority: assessment.priority,
+      classification: assessment.classification,
+      isRerouted: routeIntel.isRerouted,
       timestamp: this.getTimestamp(),
-      message: `Broadcasting emergency alert pulse to Command Center via [${path.join(' → ')}]`,
+      message: `[TELEMETRY] Broadcasting emergency pulse to Command Center via [${path.join(' → ')}]`,
     });
 
     return true;
@@ -165,6 +260,9 @@ export class SimulationEngine {
    * Main per-frame update loop called inside ThreeScene requestAnimationFrame.
    */
   public update(deltaTime: number): void {
+    this.totalElapsedTime += deltaTime;
+    this.telemetry.update(this.totalElapsedTime, this.activeSimulations, this.blockedNodeIds);
+
     for (const [type, sim] of Array.from(this.activeSimulations.entries())) {
       sim.elapsedInStage += deltaTime;
 
@@ -177,13 +275,18 @@ export class SimulationEngine {
           if (sim.pulseProgress >= 1) {
             // Pulse arrived at Command Center
             this.markers.removePulse(sim.id);
+            const assessment = this.telemetry.getEdgeRiskAssessment(sim.hazardNodeId);
             this.events.emit({
               type: 'BROADCAST_COMPLETED',
               hazardType: type,
               hazardNodeId: sim.hazardNodeId,
               path: sim.path,
+              riskScore: assessment.riskScore,
+              riskLevel: assessment.riskLevel,
+              priority: assessment.priority,
+              classification: assessment.classification,
               timestamp: this.getTimestamp(),
-              message: `Alert received at Command Center from Node ${sim.hazardNodeId}. Authorizing rescue unit.`,
+              message: `Alert received at Command Center from Node ${sim.hazardNodeId}. Risk Score: ${assessment.riskScore}/100. Authorizing rescue unit.`,
             });
 
             // Transition to DISPATCHED with delay buffer
@@ -191,6 +294,7 @@ export class SimulationEngine {
             sim.elapsedInStage = -this.DISPATCH_DELAY; // brief tactical buffer
             sim.rescueProgress = 0;
 
+            const spec = HAZARD_ZONES[type];
             // Spawn rescue unit at Command Center
             this.markers.createRescue(sim.id, sim.path);
             this.events.emit({
@@ -198,8 +302,13 @@ export class SimulationEngine {
               hazardType: type,
               hazardNodeId: sim.hazardNodeId,
               path: [...sim.path].reverse(),
+              riskScore: assessment.riskScore,
+              riskLevel: assessment.riskLevel,
+              priority: assessment.priority,
+              classification: assessment.classification,
+              recommendedAction: assessment.recommendedAction,
               timestamp: this.getTimestamp(),
-              message: `Rescue team dispatched along route [${[...sim.path].reverse().join(' → ')}]`,
+              message: `[ACTION] Rescue unit dispatched for ${spec.name}. Action: ${assessment.recommendedAction}`,
             });
           }
           break;
@@ -274,6 +383,8 @@ export class SimulationEngine {
     this.hazardEffects.reset();
     this.activeSimulations.clear();
     this.blockedNodeIds.clear();
+    this.telemetry.reset();
+    this.totalElapsedTime = 0;
     this.networkNodes.resetAllNodes();
 
     this.events.emit({

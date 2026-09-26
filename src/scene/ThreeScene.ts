@@ -12,6 +12,8 @@ import { WorldInfrastructure } from './WorldInfrastructure';
 import { WorldProps } from './WorldProps';
 import { SimulationEngine } from '../simulation/SimulationEngine';
 import { HazardType } from '../simulation/types';
+import { RaycastRegistry } from '../interaction/RaycastRegistry';
+import { InteractionManager } from '../interaction/InteractionManager';
 
 export type FrameCallback = (camera: THREE.PerspectiveCamera, width: number, height: number) => void;
 
@@ -29,6 +31,8 @@ export class ThreeScene {
   public infrastructure: WorldInfrastructure;
   public worldProps: WorldProps;
   public simulationEngine: SimulationEngine;
+  public raycastRegistry: RaycastRegistry;
+  public interactionManager: InteractionManager;
 
   private domContainer: HTMLElement;
   private animFrameId: number | null = null;
@@ -100,6 +104,33 @@ export class ThreeScene {
     // 12. Procedural Atmospheric Clouds (gentle continuous drift)
     this.clouds = new Clouds();
     this.scene.add(this.clouds.group);
+
+    // 12.5. Raycast Interaction Layer
+    this.raycastRegistry = new RaycastRegistry();
+    this.scene.add(this.raycastRegistry.group);
+
+    this.interactionManager = new InteractionManager(
+      this.renderer.domElement,
+      this.customCamera.camera,
+      this.raycastRegistry
+    );
+
+    // Sync visual selection & hover with 3D scene elements
+    this.interactionManager.onSelect((target) => {
+      if (target && target.type === 'node') {
+        this.networkNodes.setSelectedNode(target.id);
+      } else {
+        this.networkNodes.setSelectedNode(null);
+      }
+    });
+
+    this.interactionManager.onHover((target) => {
+      if (target && target.type === 'node') {
+        this.networkNodes.setHoveredNode(target.id);
+      } else {
+        this.networkNodes.setHoveredNode(null);
+      }
+    });
 
     // 13. Simulation Engine
     this.simulationEngine = new SimulationEngine(
@@ -206,7 +237,7 @@ export class ThreeScene {
 
   public setNodeFailure(nodeId: number, failed: boolean): void {
     this.simulationEngine.setNodeBlocked(nodeId, failed);
-    this.meshLinks.setSeveredNode(nodeId, failed);
+    this.meshLinks.updateBlockedNodes(this.simulationEngine.blockedNodeIds);
   }
 
   public resetSimulation(): void {
@@ -214,6 +245,7 @@ export class ThreeScene {
     this.meshLinks.resetAllSevered();
     this.networkNodes.resetAllNodes();
     this.hazardZones.resetAllTerritories();
+    this.interactionManager.selectTarget(null);
   }
 
   private startLoop = (): void => {
@@ -225,13 +257,46 @@ export class ThreeScene {
       // Camera interpolation
       this.customCamera.update();
 
+      // 1. Synchronize real-time edge risk scores with 3D Territories and Node Beacons
+      const floodAssessment = this.simulationEngine.telemetry.getEdgeRiskAssessment(1);
+      const fireAssessment = this.simulationEngine.telemetry.getEdgeRiskAssessment(2);
+      const indusAssessment = this.simulationEngine.telemetry.getEdgeRiskAssessment(3);
+
+      this.hazardZones.setTerritoryRisk('flood', floodAssessment.riskScore);
+      this.hazardZones.setTerritoryRisk('fire', fireAssessment.riskScore);
+      this.hazardZones.setTerritoryRisk('industrial', indusAssessment.riskScore);
+
+      this.networkNodes.updateNodeRisk(1, floodAssessment.riskScore);
+      this.networkNodes.updateNodeRisk(2, fireAssessment.riskScore);
+      this.networkNodes.updateNodeRisk(3, indusAssessment.riskScore);
+
+      // 2. Synchronize active tactical BFS routes for luminous mesh link illumination
+      const activePaths: number[][] = [];
+      for (const sim of this.simulationEngine.activeSimulations.values()) {
+        if (sim.path && sim.path.length >= 2) {
+          activePaths.push(sim.path);
+        }
+      }
+      const selectedId = this.networkNodes.getSelectedNodeId();
+      if (selectedId !== null && selectedId >= 1 && selectedId <= 3) {
+        const hType = selectedId === 1 ? 'flood' : selectedId === 2 ? 'fire' : 'industrial';
+        const rIntel = this.simulationEngine.telemetry.getRouteIntelligence(
+          hType,
+          this.simulationEngine.blockedNodeIds
+        );
+        if (rIntel.currentPath && rIntel.currentPath.length >= 2) {
+          activePaths.push(rIntel.currentPath);
+        }
+      }
+      this.meshLinks.setActiveRoutes(activePaths);
+
       // Ambient 3D animations
       this.networkNodes.update(elapsedTime);
       this.meshLinks.update(elapsedTime, delta);
       this.clouds.update(delta);
 
-      // Territory visual transitions (smooth Dormant ↔ Active interpolation)
-      this.hazardZones.update(delta);
+      // Territory visual transitions (smooth Dormant ↔ Active & Risk-driven breathing)
+      this.hazardZones.update(delta, elapsedTime);
 
       // Simulation Engine updates (stage progression, waypoint interpolation)
       this.simulationEngine.update(delta);
@@ -279,6 +344,8 @@ export class ThreeScene {
       this.bgTexture.dispose();
     }
 
+    this.interactionManager.dispose();
+    this.raycastRegistry.dispose();
     this.simulationEngine.dispose();
     this.markers.dispose();
     this.clouds.dispose();

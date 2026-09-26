@@ -17,12 +17,15 @@ interface ColorTransitionItem {
   activeOpacity?: number;
 }
 
-interface TerritoryVisualState {
+export interface TerritoryVisualState {
   type: HazardType;
   isActive: boolean;
+  riskScore: number;
   progress: number; // 0 = DORMANT, 1 = ACTIVE
   transitionItems: ColorTransitionItem[];
   borderMesh?: THREE.Mesh;
+  borderRibbon?: THREE.Mesh;
+  borderLine?: THREE.LineLoop;
   discMesh?: THREE.Mesh;
 }
 
@@ -39,9 +42,9 @@ export class HazardZones {
   constructor() {
     this.group = new THREE.Group();
 
-    this.territories.set('flood', { type: 'flood', isActive: false, progress: 0, transitionItems: [] });
-    this.territories.set('fire', { type: 'fire', isActive: false, progress: 0, transitionItems: [] });
-    this.territories.set('industrial', { type: 'industrial', isActive: false, progress: 0, transitionItems: [] });
+    this.territories.set('flood', { type: 'flood', isActive: false, riskScore: 0, progress: 0, transitionItems: [] });
+    this.territories.set('fire', { type: 'fire', isActive: false, riskScore: 0, progress: 0, transitionItems: [] });
+    this.territories.set('industrial', { type: 'industrial', isActive: false, riskScore: 0, progress: 0, transitionItems: [] });
 
     this.createFloodZone();
     this.createFireZone();
@@ -236,21 +239,27 @@ export class HazardZones {
       { geometry: lineGeom, material: lineMat }
     );
 
-    // Register transition items
-    this.territories.get(type)?.transitionItems.push({
-      material: ribbonMat,
-      dormantColor,
-      activeColor,
-      dormantOpacity: 0.65,
-      activeOpacity: 0.95,
-    });
-    this.territories.get(type)?.transitionItems.push({
-      material: lineMat,
-      dormantColor,
-      activeColor,
-      dormantOpacity: 0.85,
-      activeOpacity: 1.0,
-    });
+    const state = this.territories.get(type);
+    if (state) {
+      state.borderRibbon = ribbonMesh;
+      state.borderLine = lineLoop;
+      state.transitionItems.push(
+        {
+          material: ribbonMat,
+          dormantColor,
+          activeColor,
+          dormantOpacity: 0.65,
+          activeOpacity: 0.95,
+        },
+        {
+          material: lineMat,
+          dormantColor,
+          activeColor,
+          dormantOpacity: 0.85,
+          activeOpacity: 1.0,
+        }
+      );
+    }
 
     return group;
   }
@@ -558,6 +567,17 @@ export class HazardZones {
   }
 
   /**
+   * Dynamically sets the edge risk score (0 - 100) for a territory.
+   * Directly drives risk-based visual emphasis (Low, Moderate, High, Critical).
+   */
+  public setTerritoryRisk(type: HazardType, riskScore: number): void {
+    const territory = this.territories.get(type);
+    if (territory) {
+      territory.riskScore = Math.max(0, Math.min(100, riskScore));
+    }
+  }
+
+  /**
    * Set active state for an individual territory (triggered by simulation events).
    */
   public setTerritoryActive(type: HazardType, active: boolean): void {
@@ -573,19 +593,29 @@ export class HazardZones {
   public resetAllTerritories(): void {
     for (const [type, state] of this.territories.entries()) {
       state.isActive = false;
+      state.riskScore = 0;
       state.progress = 0;
       this.applyTerritoryVisuals(type, 0);
+      if (state.borderRibbon && state.borderRibbon.material) {
+        (state.borderRibbon.material as THREE.MeshBasicMaterial).opacity = 0.65;
+      }
     }
   }
 
   /**
    * Per-frame animation loop interpolating Dormant ↔ Active transitions.
-   * Duration: ~0.8s smooth lerp.
+   * Maps Edge Risk Score (0-100) to visual intensity:
+   * 0-24 LOW: 0-0.12 (calm rest)
+   * 25-49 MODERATE: 0.25-0.45 (subtle warning warmth)
+   * 50-74 HIGH: 0.50-0.72 (clear visual emphasis)
+   * 75-100 CRITICAL: 0.80-1.0 (strong visual presence)
    */
-  public update(deltaTime: number): void {
+  public update(deltaTime: number, elapsedTime: number = 0): void {
     const transitionSpeed = 1.25; // 1 / 0.8s
     for (const [type, state] of this.territories.entries()) {
-      const target = state.isActive ? 1.0 : 0.0;
+      const riskTarget = (state.riskScore / 100) * 0.82;
+      const target = state.isActive ? 1.0 : riskTarget;
+
       if (Math.abs(state.progress - target) > 0.001) {
         const step = transitionSpeed * deltaTime;
         if (state.progress < target) {
@@ -594,6 +624,18 @@ export class HazardZones {
           state.progress = Math.max(target, state.progress - step);
         }
         this.applyTerritoryVisuals(type, state.progress);
+      }
+
+      // Breathing perimeter ribbon effect when risk is elevated
+      if (state.borderRibbon && state.borderRibbon.material) {
+        const mat = state.borderRibbon.material as THREE.MeshBasicMaterial;
+        if (state.riskScore >= 25 || state.isActive) {
+          const freq = state.riskScore >= 75 || state.isActive ? 4.5 : state.riskScore >= 50 ? 2.8 : 1.5;
+          const pulse = 0.55 + 0.35 * Math.sin(elapsedTime * freq);
+          mat.opacity = THREE.MathUtils.lerp(0.65, 0.95, pulse * (state.riskScore / 100));
+        } else {
+          mat.opacity = 0.65;
+        }
       }
     }
   }
@@ -616,6 +658,10 @@ export class HazardZones {
         item.material.opacity = THREE.MathUtils.lerp(item.dormantOpacity, item.activeOpacity, progress);
       }
     }
+  }
+
+  public getTerritory(type: HazardType): TerritoryVisualState | undefined {
+    return this.territories.get(type);
   }
 
   public dispose(): void {

@@ -12,6 +12,7 @@ interface EdgeVisual {
   phaseOffset: number;
   highlightIntensity: number; // 0 to 1
   isSevered: boolean;
+  isActiveRoute: boolean;
 }
 
 export class MeshLinks {
@@ -37,11 +38,13 @@ export class MeshLinks {
 
       const geometry = new THREE.BufferGeometry().setFromPoints([p1, p2]);
 
-      // 1. Outer technical beam line
+      const isCore = !!edge.isCoreEdge;
+
+      // 1. Outer technical beam line (Subtle for field mesh, stronger for core)
       const material = new THREE.LineBasicMaterial({
         color: new THREE.Color(TOKENS.colors.cyan),
         transparent: true,
-        opacity: 0.55,
+        opacity: isCore ? 0.52 : 0.28,
         depthWrite: false,
       });
       const line = new THREE.Line(geometry, material);
@@ -51,7 +54,7 @@ export class MeshLinks {
       const coreMaterial = new THREE.LineBasicMaterial({
         color: new THREE.Color('#a5f3fc'),
         transparent: true,
-        opacity: 0.82,
+        opacity: isCore ? 0.78 : 0.40,
         depthWrite: false,
       });
       const coreLine = new THREE.Line(geometry, coreMaterial);
@@ -69,6 +72,7 @@ export class MeshLinks {
         phaseOffset,
         highlightIntensity: 0,
         isSevered: false,
+        isActiveRoute: false,
       });
     });
   }
@@ -88,37 +92,57 @@ export class MeshLinks {
     }
   }
 
+  private blockedNodes: Set<number> = new Set();
+
   /**
-   * Visually sever or restore all edges touching a specific node (e.g. Relay-11).
-   * Severed edges drop to ~6% opacity (#334155), remaining faintly visible.
+   * Updates severed status across all links based on the active set of blocked nodes.
+   * An edge is severed if either of its terminal nodes is offline.
    */
-  public setSeveredNode(nodeId: number, severed: boolean): void {
+  public updateBlockedNodes(blockedNodeIds: Set<number>): void {
+    this.blockedNodes = new Set(blockedNodeIds);
     for (const item of this.edgeVisuals) {
-      if (item.edge.source === nodeId || item.edge.target === nodeId) {
-        item.isSevered = severed;
-        if (severed) {
-          item.highlightIntensity = 0;
-          item.material.color.copy(this.severedColor);
-          item.material.opacity = 0.06;
-          item.coreMaterial.opacity = 0;
-        } else {
-          item.material.color.copy(this.baseCyan);
-          item.material.opacity = 0.55;
-          item.coreMaterial.color.copy(this.coreCyan);
-          item.coreMaterial.opacity = 0.82;
-        }
+      const severed = this.blockedNodes.has(item.edge.source) || this.blockedNodes.has(item.edge.target);
+      item.isSevered = severed;
+      if (severed) {
+        item.highlightIntensity = 0;
+        item.material.color.copy(this.severedColor);
+        item.material.opacity = 0.06;
+        item.coreMaterial.opacity = 0;
+      } else {
+        item.material.color.copy(this.baseCyan);
+        item.material.opacity = 0.55;
+        item.coreMaterial.color.copy(this.coreCyan);
+        item.coreMaterial.opacity = 0.82;
       }
     }
   }
 
+  /**
+   * Visually sever or restore all edges touching a specific node (e.g. Relay-11, Relay-15, etc.).
+   * Correctly accounts for multi-node failures so that restoring one node does not
+   * inadvertently unsever an edge if its opposing endpoint is still offline.
+   */
+  public setSeveredNode(nodeId: number, severed: boolean): void {
+    if (severed) {
+      this.blockedNodes.add(nodeId);
+    } else {
+      this.blockedNodes.delete(nodeId);
+    }
+    this.updateBlockedNodes(this.blockedNodes);
+  }
+
   public resetAllSevered(): void {
-    for (const item of this.edgeVisuals) {
-      item.isSevered = false;
-      item.highlightIntensity = 0;
-      item.material.color.copy(this.baseCyan);
-      item.material.opacity = 0.55;
-      item.coreMaterial.color.copy(this.coreCyan);
-      item.coreMaterial.opacity = 0.82;
+    this.blockedNodes.clear();
+    this.updateBlockedNodes(this.blockedNodes);
+  }
+
+  /**
+   * Highlights edges along a specific path (e.g. active BFS route)
+   */
+  public highlightPath(path: number[]): void {
+    if (!path || path.length < 2) return;
+    for (let i = 0; i < path.length - 1; i++) {
+      this.highlightEdge(path[i], path[i + 1], 0.85);
     }
   }
 
@@ -135,7 +159,35 @@ export class MeshLinks {
     return item ? item.isSevered : false;
   }
 
-  // Update loop for subtle idle shimmer and highlight decay
+  private activeRouteEdges: Set<string> = new Set();
+
+  /**
+   * Sets the active BFS routes currently engaged for hazard response or node inspection.
+   * Edges along active routes are dynamically illuminated with higher luminance.
+   */
+  public setActiveRoutes(paths: number[][]): void {
+    this.activeRouteEdges.clear();
+    for (const path of paths) {
+      if (!path || path.length < 2) continue;
+      for (let i = 0; i < path.length - 1; i++) {
+        const u = Math.min(path[i], path[i + 1]);
+        const v = Math.max(path[i], path[i + 1]);
+        this.activeRouteEdges.add(`${u}-${v}`);
+      }
+    }
+    for (const item of this.edgeVisuals) {
+      const edgeKey = `${Math.min(item.edge.source, item.edge.target)}-${Math.max(item.edge.source, item.edge.target)}`;
+      item.isActiveRoute = this.activeRouteEdges.has(edgeKey);
+    }
+  }
+
+  public isEdgeActiveRoute(source: number, target: number): boolean {
+    const u = Math.min(source, target);
+    const v = Math.max(source, target);
+    return this.activeRouteEdges.has(`${u}-${v}`);
+  }
+
+  // Update loop for subtle idle shimmer, route illumination, and highlight decay
   public update(time: number, delta: number = 0.016): void {
     if (!this.isVisible) return;
 
@@ -148,29 +200,44 @@ export class MeshLinks {
         continue;
       }
 
+      const edgeKey = `${Math.min(item.edge.source, item.edge.target)}-${Math.max(item.edge.source, item.edge.target)}`;
+      const isActiveRoute = this.activeRouteEdges.has(edgeKey);
+
       // Decay highlight intensity smoothly
       if (item.highlightIntensity > 0) {
         item.highlightIntensity = Math.max(0, item.highlightIntensity - delta * 2.2);
       }
 
-      // Shimmer oscillation for outer beam: ~0.46 to ~0.66
-      const shimmer = 0.56 + 0.10 * Math.sin(time * 1.6 + item.phaseOffset);
-      // Shimmer for inner laser core: ~0.74 to ~0.90
-      const coreShimmer = 0.82 + 0.08 * Math.sin(time * 1.6 + item.phaseOffset);
+      // Shimmer oscillation for outer beam (subtle for field mesh, stronger for core)
+      const isCore = !!item.edge.isCoreEdge;
+      const baseShimmer = isCore
+        ? 0.52 + 0.10 * Math.sin(time * 1.6 + item.phaseOffset)
+        : 0.28 + 0.06 * Math.sin(time * 1.6 + item.phaseOffset);
+      const baseCoreShimmer = isCore
+        ? 0.78 + 0.08 * Math.sin(time * 1.6 + item.phaseOffset)
+        : 0.40 + 0.06 * Math.sin(time * 1.6 + item.phaseOffset);
 
       if (item.highlightIntensity > 0) {
-        // Blend towards bright white and high opacity
+        // Blend towards bright white and high opacity (pulse passing)
         item.material.color.copy(this.baseCyan).lerp(this.pulseWhite, item.highlightIntensity);
-        item.material.opacity = THREE.MathUtils.lerp(shimmer, 0.98, item.highlightIntensity);
+        item.material.opacity = THREE.MathUtils.lerp(baseShimmer, 0.98, item.highlightIntensity);
 
         item.coreMaterial.color.copy(this.coreCyan).lerp(this.pulseWhite, item.highlightIntensity);
-        item.coreMaterial.opacity = THREE.MathUtils.lerp(coreShimmer, 1.0, item.highlightIntensity);
+        item.coreMaterial.opacity = THREE.MathUtils.lerp(baseCoreShimmer, 1.0, item.highlightIntensity);
+      } else if (isActiveRoute) {
+        // Active tactical BFS route illumination
+        const routePulse = 0.82 + 0.16 * Math.sin(time * 3.2 + item.phaseOffset);
+        item.material.color.copy(this.baseCyan);
+        item.material.opacity = 0.88;
+
+        item.coreMaterial.color.copy(this.coreCyan).lerp(this.pulseWhite, 0.45);
+        item.coreMaterial.opacity = routePulse;
       } else {
         item.material.color.copy(this.baseCyan);
-        item.material.opacity = shimmer;
+        item.material.opacity = baseShimmer;
 
         item.coreMaterial.color.copy(this.coreCyan);
-        item.coreMaterial.opacity = coreShimmer;
+        item.coreMaterial.opacity = baseCoreShimmer;
       }
     }
   }

@@ -1,22 +1,28 @@
 import React, { useEffect, useRef } from 'react';
 import * as THREE from 'three';
 import { NETWORK_NODES } from '../data/nodes';
-import { NodeStatus } from '../data/tokens';
 import { projectToScreen } from '../scene/Projection';
 import { ThreeScene } from '../scene/ThreeScene';
 
 interface NodeLabelsOverlayProps {
   scene: ThreeScene | null;
   showLabels: boolean;
+  selectedNodeId?: number | null;
+  hoveredNodeId?: number | null;
 }
 
 // Module-level reusable vector to avoid per-frame allocations
 const labelPosVec = new THREE.Vector3();
 
-export const NodeLabelsOverlay: React.FC<NodeLabelsOverlayProps> = ({ scene, showLabels }) => {
+export const NodeLabelsOverlay: React.FC<NodeLabelsOverlayProps> = ({
+  scene,
+  showLabels,
+  selectedNodeId = null,
+  hoveredNodeId = null,
+}) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const labelRefs = useRef<Map<number, HTMLDivElement>>(new Map());
-  const lastStatusMap = useRef<Map<number, NodeStatus>>(new Map());
+  const lastStateMap = useRef<Map<number, string>>(new Map());
 
   useEffect(() => {
     if (!scene) return;
@@ -26,18 +32,28 @@ export const NodeLabelsOverlay: React.FC<NodeLabelsOverlayProps> = ({ scene, sho
     const unregister = scene.addFrameCallback((camera: THREE.PerspectiveCamera, width: number, height: number) => {
       if (!showLabels) return;
 
+      const activeRoutes = scene.simulationEngine.getActiveRoutes();
+
       for (const node of NETWORK_NODES) {
         const el = labelRefs.current.get(node.id);
         if (!el) continue;
 
+        const isCore = node.id < 7;
+        const isSelected = selectedNodeId === node.id;
+        const isHovered = hoveredNodeId === node.id;
+        const isActiveRouteNode = activeRoutes.some((path: number[]) => path.includes(node.id));
+
+        // Core nodes always visible; Field mesh nodes visible on hover, selection, or active route per Section 34
+        const shouldShow = isCore || isSelected || isHovered || isActiveRouteNode;
+
         const corePos = scene.networkNodes.getCoreWorldPosition(node.id);
-        if (!corePos) {
+        if (!corePos || !shouldShow) {
           el.style.display = 'none';
           continue;
         }
 
         // Reusable vector position slightly above the node's floating core
-        labelPosVec.set(corePos.x, corePos.y + node.coreRadius + 0.6, corePos.z);
+        labelPosVec.set(corePos.x, corePos.y + node.coreRadius + (isCore ? 0.6 : 0.45), corePos.z);
 
         const screenPos = projectToScreen(labelPosVec, camera, width, height);
 
@@ -49,17 +65,19 @@ export const NodeLabelsOverlay: React.FC<NodeLabelsOverlayProps> = ({ scene, sho
           el.style.transform = `translate3d(${screenPos.x}px, ${screenPos.y}px, 0) translate(-50%, -100%)`;
         }
 
-        // Only update class name if status actually changed
+        // Update class name if status or selection state changed
         const currentStatus = scene.networkNodes.getNodeStatus(node.id) || node.status;
-        if (lastStatusMap.current.get(node.id) !== currentStatus) {
-          lastStatusMap.current.set(node.id, currentStatus);
-          el.className = `node-label-item ${currentStatus}`;
+        const stateKey = `${currentStatus}-${isSelected}-${isHovered}-${isCore}`;
+
+        if (lastStateMap.current.get(node.id) !== stateKey) {
+          lastStateMap.current.set(node.id, stateKey);
+          el.className = `node-label-item ${currentStatus} ${isCore ? 'core-node' : 'field-mesh'} ${isSelected ? 'selected' : ''} ${isHovered ? 'hovered' : ''}`;
         }
       }
     });
 
     return () => unregister();
-  }, [scene, showLabels]);
+  }, [scene, showLabels, selectedNodeId, hoveredNodeId]);
 
   if (!showLabels) return null;
 
